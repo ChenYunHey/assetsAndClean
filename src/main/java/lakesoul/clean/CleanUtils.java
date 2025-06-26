@@ -1,0 +1,246 @@
+package lakesoul.clean;
+
+import com.lakesoul.assets.PartitionLevelAssets;
+import com.lakesoul.newClean.NewCleanJob;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class CleanUtils {
+
+    private static final Logger logger = LoggerFactory.getLogger(PartitionLevelAssets.class);
+
+    private Connection connection = DriverManager.getConnection(NewCleanJob.pgUrl, NewCleanJob.userName, NewCleanJob.passWord);
+
+    public CleanUtils() throws SQLException {
+    }
+
+
+    public void write(String record) {
+        String filePath = "./record.txt";
+        try (FileWriter writer = new FileWriter(filePath, true)) {
+            writer.write(record + "\n"); // 将内容写入文件
+            System.out.println("内容已成功写入文件: " + filePath);
+        } catch (IOException e) {
+            System.err.println("写入文件时发生错误: " + e.getMessage());
+        }
+    }
+
+    //实现从pg里删除记录
+    public void deleteDataCommitInfo(String table_id, String commit_id, String partition_desc) throws SQLException {
+
+        connection = DriverManager.getConnection(NewCleanJob.pgUrl, NewCleanJob.userName, NewCleanJob.passWord);
+        String sql = "DELETE FROM data_commit_info where table_id= '" + table_id +
+                "' and commit_id= '" + commit_id +
+                "' and partition_desc ='" + partition_desc + "'";
+        try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            // 执行删除操作
+            preparedStatement.executeUpdate();
+        } catch (SQLException e) {
+            // 处理SQL异常
+            e.printStackTrace();
+            logger.info("删除data_commit_info数据异常");
+        }
+    }
+
+    public void deletePartitionInfo(String table_id, String partition_desc, String commit_id) throws SQLException {
+        String sql = "DELETE FROM partition_info where table_id= '" + table_id +
+                "' and partition_desc ='" + partition_desc + "' and '" + commit_id + "' = ANY(snapshot)";
+        try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            // 执行删除操作
+            int rowsDeleted = preparedStatement.executeUpdate();
+        } catch (SQLException e) {
+            // 处理SQL异常
+            e.printStackTrace();
+            logger.info("删除partition_info数据异常");
+        }
+    }
+
+    public void cleanPartitionInfo(String table_id, String partition_desc, int version) throws SQLException {
+        String sql = "DELETE FROM partition_info where table_id= '" + table_id +
+                "' and partition_desc ='" + partition_desc + "' and version = '" + version + "'";
+        try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            // 执行删除操作
+            int rowsDeleted = preparedStatement.executeUpdate();
+        } catch (SQLException e) {
+            // 处理SQL异常
+            e.printStackTrace();
+            logger.info("删除partition_info数据异常");
+        }
+    }
+
+    private static final String HDFS_URI_PREFIX = "hdfs:/";
+
+    public void deleteFile(List<String> filePathList) throws SQLException {
+        Configuration hdfsConfig = new Configuration();
+        for (String filePath : filePathList) {
+            if (filePath.startsWith(HDFS_URI_PREFIX)) {
+                deleteHdfsFile(filePath, hdfsConfig);
+            } else if (filePath.startsWith("file:/")) {
+                try {
+                    URI uri = new URI(filePath);
+                    String actualPath = new File(uri.getPath()).getAbsolutePath();
+                    deleteLocalFile(actualPath);
+                } catch (URISyntaxException e) {
+                    e.printStackTrace();
+                    logger.info("无法解析文件URI: " + filePath);
+                }
+            } else {
+                deleteLocalFile(filePath);
+            }
+        }
+    }
+
+    private void deleteHdfsFile(String filePath, Configuration hdfsConfig) {
+        try {
+            FileSystem fs = FileSystem.get(URI.create(filePath), hdfsConfig);
+            Path path = new Path(filePath);
+            if (fs.exists(path)) {
+                fs.delete(path, false); // false 表示不递归删除
+                logger.info("=============================HDFS 文件已删除: " + filePath);
+                deleteEmptyParentDirectories(fs, path.getParent());
+            } else {
+                logger.info("=============================HDFS 文件不存在: " + filePath);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            logger.error("=============================删除 HDFS 文件失败: " + filePath);
+        }
+    }
+
+    private void deleteLocalFile(String filePath) throws SQLException {
+        File file = new File(filePath);
+        if (file.exists()) {
+            if (file.delete()) {
+                logger.info("本地文件已删除：" + filePath);
+                deleteEmptyParentDirectories(file.getParentFile());
+            } else {
+                logger.info("本地文件删除失败: " + filePath);
+            }
+        } else {
+            logger.info("=============================本地文件不存在: " + filePath);
+        }
+    }
+
+    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc) throws SQLException {
+
+
+        snapshot.forEach(commitId -> {
+                    String sql = "SELECT \n" +
+                            "    dci.table_id, \n" +
+                            "    dci.partition_desc, \n" +
+                            "    dci.commit_id, \n" +
+                            "    file_op.path \n" +
+                            "FROM \n" +
+                            "    data_commit_info dci, \n" +
+                            "    unnest(dci.file_ops) AS file_op \n" +
+                            "WHERE \n" +
+                            "    dci.table_id = '" + tableId + "' \n" +
+                            "    AND dci.partition_desc = '" + partitionDesc + "' \n" +
+                            "    AND dci.commit_id = '" + commitId + "'";
+
+                    try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+                        // 执行删除操作
+                        ResultSet pathSet = preparedStatement.executeQuery();
+                        List<String> oldCompactionFileList = new ArrayList<>();
+                        while (pathSet.next()) {
+                            String path = pathSet.getString("path");
+                            if (!path.contains("compact_dir")) {
+                                oldCompactionFileList.add(path);
+                            }
+                        }
+                        deleteFile(oldCompactionFileList);
+                    } catch (SQLException e) {
+                        // 处理SQL异常
+                        e.printStackTrace();
+
+                    }
+                    String deleteDataCommitInfoSql = "DELETE FROM data_commit_info \n" +
+                            "WHERE table_id = '" + tableId + "' \n" +
+                            "AND commit_id = '" + commitId + "' \n" +
+                            "AND partition_desc = '" + partitionDesc + "'";
+                    try (PreparedStatement preparedStatement = connection.prepareStatement(deleteDataCommitInfoSql)) {
+                        preparedStatement.executeUpdate();
+
+                    } catch (SQLException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+        );
+    }
+
+    public void cleanDiscardFile(long expiredTime) throws SQLException {
+        long currentTimeMillis = System.currentTimeMillis();
+        String sql = "SELECT file_path FROM discard_compressed_file_info " +
+                "WHERE timestamp < ?";
+        PreparedStatement statement = connection.prepareStatement(sql);
+        statement.setLong(1, currentTimeMillis - expiredTime);
+        ResultSet resultSet = statement.executeQuery();
+        while (resultSet.next()){
+            String filePath = resultSet.getString("file_path");
+            deleteDiscardCompressedFileInfo(filePath);
+        }
+    }
+
+    private void deleteDiscardCompressedFileInfo(String path) throws SQLException {
+        String deleteDiscardSql = "delete from discard_compressed_file_info where file_path= '" + path + "'";
+        connection.prepareStatement(deleteDiscardSql).execute();
+        List<String> pathList = new ArrayList<>();
+        pathList.add(path);
+        deleteFile(pathList);
+    }
+
+    private void deleteEmptyParentDirectories(FileSystem fs, Path directory) throws IOException {
+        if (directory == null) {
+            return;
+        }
+        // 检查目录是否为空
+        if (fs.listStatus(directory).length == 0) {
+            fs.delete(directory, false); // 删除空目录
+            deleteEmptyParentDirectories(fs, directory.getParent());
+        }
+    }
+
+    private void deleteEmptyParentDirectories(File directory) {
+        if (directory == null) {
+            return; // 根目录不需要处理
+        }
+        // 检查目录是否为空
+        if (Objects.requireNonNull(directory.list()).length == 0) {
+            if (directory.delete()) {
+                deleteEmptyParentDirectories(directory.getParentFile());
+            }
+        }
+    }
+
+    public String[] parseFileOpsString(String fileOPs) {
+        String[] fileInfo = new String[2];
+        // 正则表达式匹配文件路径和其他信息
+        Pattern pattern = Pattern.compile("\\(([^,]+),([^,]+),([^,]+),(\"[^\"]*\"|[^,)]+)\\)");
+
+        Matcher matcher = pattern.matcher(fileOPs);
+        if (matcher.find()) {
+            String filePath = matcher.group(1);
+            fileInfo[0] = filePath; // 文件路径
+            fileInfo[1] = matcher.group(4); // 其他信息（如字段列表）
+        } else {
+            logger.info("=============================未找到匹配的文件路径!");
+        }
+        return fileInfo;
+    }
+
+}
