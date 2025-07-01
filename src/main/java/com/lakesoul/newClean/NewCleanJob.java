@@ -19,12 +19,9 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
 
-import java.io.IOException;
+import java.sql.Connection;
 import java.sql.SQLException;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 
 public class NewCleanJob {
     public static int expiredTime = 60000;
@@ -39,7 +36,8 @@ public class NewCleanJob {
     private static String schemaList;
     public static String pgUrl;
     private static int sourceParallelism;
-    private static long ontimerInterval;
+    private static int ontimerInterval;
+    private static CleanUtils cleanUtils;
 
     public static void main(String[] args) throws Exception {
         PgDeserialization deserialization = new PgDeserialization();
@@ -58,8 +56,13 @@ public class NewCleanJob {
         schemaList = parameter.get(SourceOptions.SCHEMA_LIST.key());
         pgUrl = parameter.get(SourceOptions.PG_URL.key());
         sourceParallelism = parameter.getInt(SourceOptions.SOURCE_PARALLELISM.key(), SourceOptions.SOURCE_PARALLELISM.defaultValue());
-        ontimerInterval = parameter.getLong(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
-        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
+        ontimerInterval = 60000;
+        //ontimerInterval = parameter.getLong(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
+        expiredTime = 60000;
+        //connection = DriverManager.getConnection("jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
+
+        //expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
+
 
         JdbcIncrementalSource<String> postgresIncrementalSource =
                 PostgresSourceBuilder.PostgresIncrementalSource.<String>builder()
@@ -86,39 +89,67 @@ public class NewCleanJob {
                         "PostgresParallelSource")
                 .setParallelism(sourceParallelism);
         postgresParallelSource.map(new PartitionInfoRecordGets.metaMapper())
+                .filter(Objects::nonNull)
                 .keyBy(value -> value.table_id + "/" + value.partition_desc)
-                .process(new ProcessClean());
+                .process(new ProcessClean(pgUrl, userName, passWord, expiredTime, ontimerInterval));
 
         env.execute();
 
     }
 
     public static class ProcessClean extends KeyedProcessFunction<String, PartitionInfo, String> {
-        private transient MapState<String, Long> compactState;
         private transient MapState<String, PartitionInfo.WillStateValue> willState;
         private transient ValueState<Boolean> timerInitializedState;
-        CleanUtils cleanUtils = new CleanUtils();
+        private transient MapState<String, Long> compactNewState;
 
-        public ProcessClean() throws SQLException {
+        private final String pgUrl;
+        private final String userName;
+        private final String password;
+        private final int expiredTime;
+        private final int ontimerInterval;
+
+        private transient Connection pgConnection;
+
+        public ProcessClean(String pgUrl, String userName, String password, int expiredTime, int ontimerInterval) {
+            this.pgUrl = pgUrl;
+            this.userName = userName;
+            this.password = password;
+            this.expiredTime = expiredTime;
+            this.ontimerInterval = ontimerInterval;
         }
 
-
         @Override
-        public void open(Configuration parameters) throws IOException {
-            MapStateDescriptor<String, PartitionInfo.WillStateValue> willStateDesc = new MapStateDescriptor<>(
-                    "willStateDesc",
-                    String.class, PartitionInfo.WillStateValue.class
-            );
+        public void open(Configuration parameters) throws SQLException {
+            // 初始化状态变量
+            MapStateDescriptor<String, PartitionInfo.WillStateValue> willStateDesc =
+                    new MapStateDescriptor<>("willStateDesc", String.class, PartitionInfo.WillStateValue.class);
             willState = getRuntimeContext().getMapState(willStateDesc);
 
-            MapStateDescriptor<String, Long> compactStateDesc = new MapStateDescriptor<>(
-                    "compactStateDesc",
-                    String.class, Long.class
-            );
-            compactState = getRuntimeContext().getMapState(compactStateDesc);
+            MapStateDescriptor<String, Long> compactNewStateDesc =
+                    new MapStateDescriptor<>("newCompactDesc", String.class, Long.class);
+            compactNewState = getRuntimeContext().getMapState(compactNewStateDesc);
 
-            ValueStateDescriptor<Boolean> initDesc = new ValueStateDescriptor<>("timerInit", Boolean.class, false);
+            ValueStateDescriptor<Boolean> initDesc =
+                    new ValueStateDescriptor<>("timerInit", Boolean.class, false);
             timerInitializedState = getRuntimeContext().getState(initDesc);
+
+            PGConnectionPool.init(pgUrl, userName, password);
+            pgConnection = PGConnectionPool.getConnection();
+            // 初始化 CleanUtils 实例
+            cleanUtils = new CleanUtils();
+
+            // 初始化 PostgreSQL 连接
+//            try {
+//                Class.forName("org.postgresql.Driver");
+//                connection = DriverManager.getConnection(
+//                        "jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
+//
+//                System.out.println("✅ PostgreSQL connection established.");
+//            } catch (ClassNotFoundException e) {
+//                throw new RuntimeException("❌ PostgreSQL driver not found", e);
+//            } catch (SQLException e) {
+//                throw new RuntimeException("❌ Failed to connect to PostgreSQL: " + pgUrl, e);
+//            }
         }
 
         @Override
@@ -137,11 +168,11 @@ public class NewCleanJob {
                 ctx.timerService().registerProcessingTimeTimer(currentProcessingTime + ontimerInterval);
             }
             if (commitOp.equals("AppendCommit") || commitOp.equals("MergeCommit")) {
-                if (compactState.contains(tableId + "/" + partitionDesc)) {
-                    long compactTime = compactState.get(tableId + "/" + partitionDesc);
+                if (compactNewState.contains(tableId + "/" + partitionDesc)) {
+                    long compactTime = compactNewState.get(tableId + "/" + partitionDesc);
                     if (timestamp < compactTime - expiredTime) {
-                        cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc);
-                        cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version);
+                        cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection);
+                        cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
                     } else {
                         willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                     }
@@ -150,18 +181,19 @@ public class NewCleanJob {
                 willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
             }
             if (commitOp.equals("CompactionCommit") || commitOp.equals("UpdateCommit")) {
-                if (compactState.contains(tableId + "/" + partitionDesc)) {
-                    long compactTime = compactState.get(tableId + "/" + partitionDesc);
-                    if (timestamp > compactState.get(tableId + "/" + partitionDesc)) {
-                        compactState.put(tableId + "/" + partitionDesc, timestamp);
+                if (compactNewState.contains(tableId + "/" + partitionDesc)) {
+                    long compactTime = compactNewState.get(tableId + "/" + partitionDesc) ;
+                    if (timestamp > compactNewState.get(tableId + "/" + partitionDesc)) {
+                        compactNewState.put(tableId + "/" + partitionDesc, timestamp);
                     } else {
                         if (timestamp < compactTime - expiredTime) {
-                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc);
-                            cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version);
+                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection);
+                            cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
                         }
                     }
-                } else {
-                    compactState.put(tableId + "/" + partitionDesc, timestamp);
+                }
+                else {
+                    compactNewState.put(tableId + "/" + partitionDesc, timestamp);
                     willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                 }
             }
@@ -169,10 +201,9 @@ public class NewCleanJob {
 
         @Override
         public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
-            //CleanUtils cleanUtils = new CleanUtils();
-            cleanUtils.cleanDiscardFile(expiredTime);
 
-            for (Map.Entry<String, Long> entry : compactState.entries()) {
+            cleanUtils.cleanDiscardFile(expiredTime, pgConnection);
+            for (Map.Entry<String, Long> entry : compactNewState.entries()) {
                 String compactId = entry.getKey();
                 Long commitTime = entry.getValue();
                 long expiredThreshold = commitTime - expiredTime;
@@ -189,8 +220,8 @@ public class NewCleanJob {
                     if (compositeKey.equals(compactId)) {
                         PartitionInfo.WillStateValue stateValue = willStateEntry.getValue();
                         if (stateValue.timestamp < expiredThreshold) {
-                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc);
-                            cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version);
+                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection);
+                            cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
                             willStateIterator.remove();
                         }
                     }
@@ -198,6 +229,14 @@ public class NewCleanJob {
             }
             long currentProcessingTime = ctx.timerService().currentProcessingTime();
             ctx.timerService().registerProcessingTimeTimer(currentProcessingTime + ontimerInterval);
+        }
+
+        @Override
+        public void close() throws Exception {
+            if (pgConnection != null && !pgConnection.isClosed()) {
+                pgConnection.close(); // HikariCP 会自动归还连接
+                System.out.println("✅ PostgreSQL connection returned to pool.");
+            }
         }
     }
 }

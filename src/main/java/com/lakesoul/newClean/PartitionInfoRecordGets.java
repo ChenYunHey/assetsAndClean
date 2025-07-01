@@ -61,6 +61,54 @@ public class PartitionInfoRecordGets {
             this.snapshot = snapshot;
         }
 
+        public String getTable_id() {
+            return table_id;
+        }
+
+        public void setTable_id(String table_id) {
+            this.table_id = table_id;
+        }
+
+        public String getPartition_desc() {
+            return partition_desc;
+        }
+
+        public void setPartition_desc(String partition_desc) {
+            this.partition_desc = partition_desc;
+        }
+
+        public int getVersion() {
+            return version;
+        }
+
+        public void setVersion(int version) {
+            this.version = version;
+        }
+
+        public String getCommit_op() {
+            return commit_op;
+        }
+
+        public void setCommit_op(String commit_op) {
+            this.commit_op = commit_op;
+        }
+
+        public long getTimestamp() {
+            return timestamp;
+        }
+
+        public void setTimestamp(long timestamp) {
+            this.timestamp = timestamp;
+        }
+
+        public List<String> getSnapshot() {
+            return snapshot;
+        }
+
+        public void setSnapshot(List<String> snapshot) {
+            this.snapshot = snapshot;
+        }
+
         @Override
         public String toString() {
             return "PartitionInfo{" +

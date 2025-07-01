@@ -58,8 +58,6 @@ public class RecordGets {
 //                            logger.error("fileOp :" + new String(Base64.getDecoder().decode(op.toString()),StandardCharsets.UTF_8) );
 //                            logger.error("decode :" + Arrays.toString(Base64.getDecoder().decode(op.toString())));
 //                            logger.error("record: " + commitJson.toJSONString());
-                            } catch (SQLException e) {
-                                throw new RuntimeException(e);
                             }
                         }
                         return new DataCommitInfo(tableId,commitTime,commitOp,commitId,partitionDesc,filePathList);

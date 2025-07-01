@@ -20,7 +20,7 @@ public class SourceOptions {
     public static final ConfigOption<String> PLUG_NAME = ConfigOptions.key("plugName").stringType().noDefaultValue().withDescription("plug name of postgresql");
     public static final ConfigOption<String> SCHEMA_LIST = ConfigOptions.key("schemaList").stringType().defaultValue("public").withDescription("");
     public static final ConfigOption<String> PG_URL = ConfigOptions.key("url").stringType().noDefaultValue().withDescription("");
-    public static final ConfigOption<Integer> SOURCE_PARALLELISM = ConfigOptions.key("source.parallelism").intType().defaultValue(4).withDescription("job Parallelism");
+    public static final ConfigOption<Integer> SOURCE_PARALLELISM = ConfigOptions.key("source.parallelism").intType().defaultValue(1).withDescription("job Parallelism");
     public static final ConfigOption<Integer> DATA_EXPIRED_TIME = ConfigOptions.key("dataExpiredTime").intType().defaultValue(3).withDescription("");
     public static final ConfigOption<String> STARTUP_OPTIONS_CONFIG_OPTION = ConfigOptions.key("start_option").stringType().defaultValue("initial").withDescription("");
     public static final ConfigOption<Integer> JDBC_SINK_BATCH_SIZE = ConfigOptions.key("jdbcBatchSize").intType().defaultValue(2000).withDescription("jdbc sink batch size");

@@ -1,7 +1,5 @@
 package com.lakesoul.clean;
 
-import com.lakesoul.assets.PartitionLevelAssets;
-import com.lakesoul.newClean.NewCleanJob;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -22,13 +20,7 @@ import java.util.regex.Pattern;
 
 public class CleanUtils {
 
-    private static final Logger logger = LoggerFactory.getLogger(PartitionLevelAssets.class);
-
-    private Connection connection = DriverManager.getConnection(NewCleanJob.pgUrl, NewCleanJob.userName, NewCleanJob.passWord);
-
-    public CleanUtils() throws SQLException {
-    }
-
+    private static final Logger logger = LoggerFactory.getLogger(CleanUtils.class);
 
     public void write(String record) {
         String filePath = "./record.txt";
@@ -42,8 +34,7 @@ public class CleanUtils {
 
     //实现从pg里删除记录
     public void deleteDataCommitInfo(String table_id, String commit_id, String partition_desc) throws SQLException {
-
-        connection = DriverManager.getConnection(NewCleanJob.pgUrl, NewCleanJob.userName, NewCleanJob.passWord);
+        Connection connection = DriverManager.getConnection("jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
         String sql = "DELETE FROM data_commit_info where table_id= '" + table_id +
                 "' and commit_id= '" + commit_id +
                 "' and partition_desc ='" + partition_desc + "'";
@@ -58,6 +49,7 @@ public class CleanUtils {
     }
 
     public void deletePartitionInfo(String table_id, String partition_desc, String commit_id) throws SQLException {
+        Connection connection = DriverManager.getConnection("jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
         String sql = "DELETE FROM partition_info where table_id= '" + table_id +
                 "' and partition_desc ='" + partition_desc + "' and '" + commit_id + "' = ANY(snapshot)";
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
@@ -70,12 +62,13 @@ public class CleanUtils {
         }
     }
 
-    public void cleanPartitionInfo(String table_id, String partition_desc, int version) throws SQLException {
+    public void cleanPartitionInfo(String table_id, String partition_desc, int version, Connection connection) throws SQLException {
         String sql = "DELETE FROM partition_info where table_id= '" + table_id +
                 "' and partition_desc ='" + partition_desc + "' and version = '" + version + "'";
+        System.out.println(sql);
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
             // 执行删除操作
-            int rowsDeleted = preparedStatement.executeUpdate();
+            preparedStatement.executeUpdate();
         } catch (SQLException e) {
             // 处理SQL异常
             e.printStackTrace();
@@ -113,6 +106,7 @@ public class CleanUtils {
                 fs.delete(path, false); // false 表示不递归删除
                 logger.info("=============================HDFS 文件已删除: " + filePath);
                 deleteEmptyParentDirectories(fs, path.getParent());
+                fs.close();
             } else {
                 logger.info("=============================HDFS 文件不存在: " + filePath);
             }
@@ -136,9 +130,7 @@ public class CleanUtils {
         }
     }
 
-    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc) throws SQLException {
-
-
+    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc, Connection connection) throws SQLException {
         snapshot.forEach(commitId -> {
                     String sql = "SELECT \n" +
                             "    dci.table_id, \n" +
@@ -152,7 +144,6 @@ public class CleanUtils {
                             "    dci.table_id = '" + tableId + "' \n" +
                             "    AND dci.partition_desc = '" + partitionDesc + "' \n" +
                             "    AND dci.commit_id = '" + commitId + "'";
-
                     try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
                         // 执行删除操作
                         ResultSet pathSet = preparedStatement.executeQuery();
@@ -163,7 +154,9 @@ public class CleanUtils {
                                 oldCompactionFileList.add(path);
                             }
                         }
-                        deleteFile(oldCompactionFileList);
+                        if (!oldCompactionFileList.isEmpty()){
+                            deleteFile(oldCompactionFileList);
+                        }
                     } catch (SQLException e) {
                         // 处理SQL异常
                         e.printStackTrace();
@@ -183,25 +176,30 @@ public class CleanUtils {
         );
     }
 
-    public void cleanDiscardFile(long expiredTime) throws SQLException {
-        long currentTimeMillis = System.currentTimeMillis();
-        String sql = "SELECT file_path FROM discard_compressed_file_info " +
-                "WHERE timestamp < ?";
-        PreparedStatement statement = connection.prepareStatement(sql);
-        statement.setLong(1, currentTimeMillis - expiredTime);
-        ResultSet resultSet = statement.executeQuery();
-        while (resultSet.next()){
-            String filePath = resultSet.getString("file_path");
-            deleteDiscardCompressedFileInfo(filePath);
-        }
-    }
+    public void cleanDiscardFile(long expiredTime, Connection connection) throws SQLException {
+        logger.info("expiredTime: " + expiredTime);
 
-    private void deleteDiscardCompressedFileInfo(String path) throws SQLException {
-        String deleteDiscardSql = "delete from discard_compressed_file_info where file_path= '" + path + "'";
-        connection.prepareStatement(deleteDiscardSql).execute();
-        List<String> pathList = new ArrayList<>();
-        pathList.add(path);
-        deleteFile(pathList);
+        long currentTimeMillis = System.currentTimeMillis();
+        String querySql = "SELECT file_path FROM discard_compressed_file_info WHERE timestamp < ?";
+        String deleteSql = "DELETE FROM discard_compressed_file_info WHERE file_path = ?";
+
+        try (
+                PreparedStatement selectStmt = connection.prepareStatement(querySql);
+                PreparedStatement deleteStmt = connection.prepareStatement(deleteSql)
+        ) {
+            selectStmt.setLong(1, currentTimeMillis - expiredTime);
+            ResultSet resultSet = selectStmt.executeQuery();
+
+            List<String> pathList = new ArrayList<>();
+
+            while (resultSet.next()) {
+                String filePath = resultSet.getString("file_path");
+                deleteStmt.setString(1, filePath);
+                deleteStmt.executeUpdate();
+                pathList.add(filePath);
+            }
+            deleteFile(pathList);
+        }
     }
 
     private void deleteEmptyParentDirectories(FileSystem fs, Path directory) throws IOException {
@@ -231,7 +229,6 @@ public class CleanUtils {
         String[] fileInfo = new String[2];
         // 正则表达式匹配文件路径和其他信息
         Pattern pattern = Pattern.compile("\\(([^,]+),([^,]+),([^,]+),(\"[^\"]*\"|[^,)]+)\\)");
-
         Matcher matcher = pattern.matcher(fileOPs);
         if (matcher.find()) {
             String filePath = matcher.group(1);
