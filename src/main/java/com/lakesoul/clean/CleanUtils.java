@@ -65,12 +65,11 @@ public class CleanUtils {
     public void cleanPartitionInfo(String table_id, String partition_desc, int version, Connection connection) throws SQLException {
         String sql = "DELETE FROM partition_info where table_id= '" + table_id +
                 "' and partition_desc ='" + partition_desc + "' and version = '" + version + "'";
-        System.out.println(sql);
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
             // 执行删除操作
             preparedStatement.executeUpdate();
+            logger.info(sql);
         } catch (SQLException e) {
-            // 处理SQL异常
             e.printStackTrace();
             logger.info("删除partition_info数据异常");
         }
@@ -147,6 +146,7 @@ public class CleanUtils {
                     try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
                         // 执行删除操作
                         ResultSet pathSet = preparedStatement.executeQuery();
+                        logger.info(sql);
                         List<String> oldCompactionFileList = new ArrayList<>();
                         while (pathSet.next()) {
                             String path = pathSet.getString("path");

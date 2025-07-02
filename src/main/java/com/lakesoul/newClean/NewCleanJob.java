@@ -78,7 +78,6 @@ public class NewCleanJob {
                         .build();
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.enableCheckpointing(30000, CheckpointingMode.EXACTLY_ONCE);
 
         DataStreamSource<String> postgresParallelSource = env.fromSource(
                         postgresIncrementalSource,
@@ -160,23 +159,25 @@ public class NewCleanJob {
                     } else {
                         willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                     }
+                } else {
+                    willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                 }
-            } else {
-                willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
             }
             if (commitOp.equals("CompactionCommit") || commitOp.equals("UpdateCommit")) {
                 if (compactNewState.contains(tableId + "/" + partitionDesc)) {
                     long compactTime = compactNewState.get(tableId + "/" + partitionDesc) ;
-                    if (timestamp > compactNewState.get(tableId + "/" + partitionDesc)) {
+                    if (timestamp > compactTime) {
                         compactNewState.put(tableId + "/" + partitionDesc, timestamp);
+                        willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                     } else {
                         if (timestamp < compactTime - expiredTime) {
                             cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection);
                             cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
+                        } else {
+                            willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                         }
                     }
-                }
-                else {
+                } else {
                     compactNewState.put(tableId + "/" + partitionDesc, timestamp);
                     willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                 }
