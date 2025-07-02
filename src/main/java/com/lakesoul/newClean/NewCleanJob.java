@@ -56,13 +56,10 @@ public class NewCleanJob {
         schemaList = parameter.get(SourceOptions.SCHEMA_LIST.key());
         pgUrl = parameter.get(SourceOptions.PG_URL.key());
         sourceParallelism = parameter.getInt(SourceOptions.SOURCE_PARALLELISM.key(), SourceOptions.SOURCE_PARALLELISM.defaultValue());
-        ontimerInterval = 60000;
-        //ontimerInterval = parameter.getLong(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
-        expiredTime = 60000;
-        //connection = DriverManager.getConnection("jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
-
-        //expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
-
+        //ontimerInterval = 60000;
+        ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
+        //expiredTime = 60000;
+        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
 
         JdbcIncrementalSource<String> postgresIncrementalSource =
                 PostgresSourceBuilder.PostgresIncrementalSource.<String>builder()
@@ -135,21 +132,8 @@ public class NewCleanJob {
 
             PGConnectionPool.init(pgUrl, userName, password);
             pgConnection = PGConnectionPool.getConnection();
-            // 初始化 CleanUtils 实例
             cleanUtils = new CleanUtils();
 
-            // 初始化 PostgreSQL 连接
-//            try {
-//                Class.forName("org.postgresql.Driver");
-//                connection = DriverManager.getConnection(
-//                        "jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
-//
-//                System.out.println("✅ PostgreSQL connection established.");
-//            } catch (ClassNotFoundException e) {
-//                throw new RuntimeException("❌ PostgreSQL driver not found", e);
-//            } catch (SQLException e) {
-//                throw new RuntimeException("❌ Failed to connect to PostgreSQL: " + pgUrl, e);
-//            }
         }
 
         @Override
@@ -201,13 +185,11 @@ public class NewCleanJob {
 
         @Override
         public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
-
             cleanUtils.cleanDiscardFile(expiredTime, pgConnection);
             for (Map.Entry<String, Long> entry : compactNewState.entries()) {
                 String compactId = entry.getKey();
                 Long commitTime = entry.getValue();
                 long expiredThreshold = commitTime - expiredTime;
-
                 Iterator<Map.Entry<String, PartitionInfo.WillStateValue>> willStateIterator = willState.iterator();
                 while (willStateIterator.hasNext()) {
                     Map.Entry<String, PartitionInfo.WillStateValue> willStateEntry = willStateIterator.next();
@@ -234,7 +216,7 @@ public class NewCleanJob {
         @Override
         public void close() throws Exception {
             if (pgConnection != null && !pgConnection.isClosed()) {
-                pgConnection.close(); // HikariCP 会自动归还连接
+                pgConnection.close();
                 System.out.println("✅ PostgreSQL connection returned to pool.");
             }
         }
