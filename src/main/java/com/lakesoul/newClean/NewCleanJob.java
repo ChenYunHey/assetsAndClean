@@ -97,6 +97,7 @@ public class NewCleanJob {
         private transient MapState<String, PartitionInfo.WillStateValue> willState;
         private transient ValueState<Boolean> timerInitializedState;
         private transient MapState<String, Long> compactNewState;
+        private transient ValueState<Boolean> compactionVersionState;
 
         private final String pgUrl;
         private final String userName;
@@ -129,6 +130,10 @@ public class NewCleanJob {
                     new ValueStateDescriptor<>("timerInit", Boolean.class, false);
             timerInitializedState = getRuntimeContext().getState(initDesc);
 
+            ValueStateDescriptor<Boolean> compactVersionDesc =
+                    new ValueStateDescriptor<>("compactVersion", Boolean.class, false);
+            compactionVersionState = getRuntimeContext().getState(compactVersionDesc);
+
             PGConnectionPool.init(pgUrl, userName, password);
             pgConnection = PGConnectionPool.getConnection();
             cleanUtils = new CleanUtils();
@@ -143,8 +148,11 @@ public class NewCleanJob {
             long timestamp = value.timestamp;
             int version = value.version;
             List<String> snapshot = value.snapshot;
+            if (commitOp.equals("CompactionCommit") || commitOp.equals("UpdateCommit")){
+                compactionVersionState.update(cleanUtils.getCompactVersion(tableId, partitionDesc, version, pgConnection));
+            }
+            boolean compactVersion = compactionVersionState.value();
             PartitionInfo.WillStateValue willStateValue = new PartitionInfo.WillStateValue(timestamp, snapshot);
-
             if (!timerInitializedState.value()) {
                 timerInitializedState.update(true);
                 long currentProcessingTime = ctx.timerService().currentProcessingTime();
@@ -154,7 +162,7 @@ public class NewCleanJob {
                 if (compactNewState.contains(tableId + "/" + partitionDesc)) {
                     long compactTime = compactNewState.get(tableId + "/" + partitionDesc);
                     if (timestamp < compactTime - expiredTime) {
-                        cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection);
+                        cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection, compactVersion);
                         cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
                     } else {
                         willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
@@ -171,7 +179,7 @@ public class NewCleanJob {
                         willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                     } else {
                         if (timestamp < compactTime - expiredTime) {
-                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection);
+                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection, compactVersion);
                             cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
                         } else {
                             willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
@@ -203,7 +211,7 @@ public class NewCleanJob {
                     if (compositeKey.equals(compactId)) {
                         PartitionInfo.WillStateValue stateValue = willStateEntry.getValue();
                         if (stateValue.timestamp < expiredThreshold) {
-                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection);
+                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection, compactionVersionState.value());
                             cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
                             willStateIterator.remove();
                         }

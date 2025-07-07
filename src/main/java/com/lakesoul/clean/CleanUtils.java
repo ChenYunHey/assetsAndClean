@@ -12,9 +12,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -129,46 +127,87 @@ public class CleanUtils {
         }
     }
 
-    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc, Connection connection) throws SQLException {
-        snapshot.forEach(commitId -> {
-                    String sql = "SELECT \n" +
-                            "    dci.table_id, \n" +
-                            "    dci.partition_desc, \n" +
-                            "    dci.commit_id, \n" +
-                            "    file_op.path \n" +
-                            "FROM \n" +
-                            "    data_commit_info dci, \n" +
-                            "    unnest(dci.file_ops) AS file_op \n" +
-                            "WHERE \n" +
-                            "    dci.table_id = '" + tableId + "' \n" +
-                            "    AND dci.partition_desc = '" + partitionDesc + "' \n" +
-                            "    AND dci.commit_id = '" + commitId + "'";
-                    try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-                        // 执行删除操作
-                        ResultSet pathSet = preparedStatement.executeQuery();
-                        logger.info(sql);
-                        List<String> oldCompactionFileList = new ArrayList<>();
-                        while (pathSet.next()) {
-                            String path = pathSet.getString("path");
-                            if (!path.contains("compact_dir")) {
-                                oldCompactionFileList.add(path);
-                            }
-                        }
-                        if (!oldCompactionFileList.isEmpty()){
-                            deleteFile(oldCompactionFileList);
-                        }
-                    } catch (SQLException e) {
-                        // 处理SQL异常
-                        e.printStackTrace();
+    public boolean getCompactVersion(String tableId, String partitionDesc, int version, Connection connection) throws SQLException {
+        String snapshotSql = "SELECT snapshot FROM partition_info " +
+                "WHERE table_id = ? AND partition_desc = ? AND version = ?";
 
+        List<UUID> snapshotCommitIds = new ArrayList<>();
+
+        try (PreparedStatement ps = connection.prepareStatement(snapshotSql)) {
+            ps.setString(1, tableId);
+            ps.setString(2, partitionDesc);
+            ps.setInt(3, version);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    Array snapshotArray = rs.getArray("snapshot");
+                    if (snapshotArray != null) {
+                        UUID[] snapshot = (UUID[]) snapshotArray.getArray();
+                        snapshotCommitIds.addAll(Arrays.asList(snapshot));
                     }
+                }
+            }
+        }
+
+        String fileSql = "SELECT unnest(file_ops) AS op FROM data_commit_info WHERE commit_id = ANY(?)";
+
+        try (PreparedStatement ps = connection.prepareStatement(fileSql)) {
+            Array uuidArray = connection.createArrayOf("uuid", snapshotCommitIds.toArray());
+            ps.setArray(1, uuidArray);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()){
+                    Object op = rs.getObject("op");
+                    String path = op.toString();
+                    return path.contains("compact_") && path.contains("compact_dir");
+                }
+            }
+        }
+        return true;
+    }
+
+
+    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc, Connection connection, Boolean newCompaction) throws SQLException {
+        snapshot.forEach(commitId -> {
+            if (!newCompaction) {
+                logger.info("清理旧版压缩数据");
+                String sql = "SELECT \n" +
+                        "    dci.table_id, \n" +
+                        "    dci.partition_desc, \n" +
+                        "    dci.commit_id, \n" +
+                        "    file_op.path \n" +
+                        "FROM \n" +
+                        "    data_commit_info dci, \n" +
+                        "    unnest(dci.file_ops) AS file_op \n" +
+                        "WHERE \n" +
+                        "    dci.table_id = '" + tableId + "' \n" +
+                        "    AND dci.partition_desc = '" + partitionDesc + "' \n" +
+                        "    AND dci.commit_id = '" + commitId + "'";
+                try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+                    // 执行删除操作
+                    ResultSet pathSet = preparedStatement.executeQuery();
+                    logger.info(sql);
+                    List<String> oldCompactionFileList = new ArrayList<>();
+                    while (pathSet.next()) {
+                        String path = pathSet.getString("path");
+                        oldCompactionFileList.add(path);
+                    }
+                    if (!oldCompactionFileList.isEmpty()){
+                        deleteFile(oldCompactionFileList);
+                    }
+                } catch (SQLException e) {
+                    // 处理SQL异常
+                    e.printStackTrace();
+
+                }
+            }
                     String deleteDataCommitInfoSql = "DELETE FROM data_commit_info \n" +
                             "WHERE table_id = '" + tableId + "' \n" +
                             "AND commit_id = '" + commitId + "' \n" +
                             "AND partition_desc = '" + partitionDesc + "'";
                     try (PreparedStatement preparedStatement = connection.prepareStatement(deleteDataCommitInfoSql)) {
+                        logger.info(deleteDataCommitInfoSql);
                         preparedStatement.executeUpdate();
-
                     } catch (SQLException e) {
                         throw new RuntimeException(e);
                     }
@@ -178,11 +217,10 @@ public class CleanUtils {
 
     public void cleanDiscardFile(long expiredTime, Connection connection) throws SQLException {
         logger.info("expiredTime: " + expiredTime);
-
+        logger.info("从discard_compressed_file_info表中清理过期数据");
         long currentTimeMillis = System.currentTimeMillis();
         String querySql = "SELECT file_path FROM discard_compressed_file_info WHERE timestamp < ?";
         String deleteSql = "DELETE FROM discard_compressed_file_info WHERE file_path = ?";
-
         try (
                 PreparedStatement selectStmt = connection.prepareStatement(querySql);
                 PreparedStatement deleteStmt = connection.prepareStatement(deleteSql)
@@ -200,6 +238,7 @@ public class CleanUtils {
             }
             deleteFile(pathList);
         }
+
     }
 
     private void deleteEmptyParentDirectories(FileSystem fs, Path directory) throws IOException {
