@@ -84,7 +84,7 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
         result.put("tableName",tableName);
         result.put("before",beforeJson);
         result.put("after",afterJson);
-        if (beforeJson.size() > 0 || afterJson.size() > 0) {
+        if (!beforeJson.isEmpty() || !afterJson.isEmpty()) {
             collector.collect(result.toJSONString());
         }
     }

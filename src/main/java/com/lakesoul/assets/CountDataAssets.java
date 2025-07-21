@@ -12,12 +12,17 @@ import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
+import org.apache.flink.connector.jdbc.JdbcExecutionOptions;
+import org.apache.flink.connector.jdbc.JdbcSink;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.util.OutputTag;
 
 import java.util.Properties;
 
@@ -94,18 +99,13 @@ public class CountDataAssets {
                         .build();
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         DataStreamSource<String> postgresParallelSource = env.fromSource(postgresIncrementalSource, WatermarkStrategy.noWatermarks(), "PostgresParallelSource").setParallelism(sourceParallelism);
-//        OutputTag<Tuple3<String, String, String[]>> tableInfoTag = new OutputTag<Tuple3<String, String, String[]>>("table_info") {
-//        };
-//        OutputTag<Tuple3<String, String, String[]>> dataCommitInfoTag = new OutputTag<Tuple3<String, String, String[]>>("data_commit_info") {
-//        };
+
         SingleOutputStreamOperator<Tuple3<String, String, String[]>> mainProcess = postgresParallelSource.map(new PartitionLevelAssets.metaMapper());
         DataStream<TableCounts> datacommitInfoStream = mainProcess.keyBy((value) -> {
             return (String)value.f1;
         }).process(new PartitionLevelAssets.PartitionLevelProcessFunction()).keyBy((value) -> {
             return value.tableId;
         }).process(new TableLevelAsstes());
-
-
 
         SingleOutputStreamOperator<TableCounts> tableCountsLatestStreaming = datacommitInfoStream
                 .keyBy(value -> value.tableId)
@@ -122,7 +122,7 @@ public class CountDataAssets {
                     .keyBy(value -> value.tableId).process(new JdbcTableLevelAssets());
         }
 
-        tableCountsStreaming.print();
+        //tableCountsStreaming.print();
 
 //        SingleOutputStreamOperator<TableCountsWithTableInfo> tableCountsStreaming = mainProcess.getSideOutput(tableInfoTag).keyBy((value) -> {
 //            return (String)value.f1;
@@ -130,60 +130,106 @@ public class CountDataAssets {
 //            return value.tableId;
 //        })).process(new TableLevelAsstes.MergeFunction());
 
-//        JdbcConnectionOptions build = (new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()).withUrl(pgUrl).withDriverName("org.postgresql.Driver").withUsername(userName).withPassword(passWord).build();
-//        String tableLevelAssetsSql = "INSERT INTO table_level_assets (table_id, table_name, domain, creator, namespace, partition_counts, file_counts, file_total_size, file_base_count, file_base_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (table_id) DO UPDATE SET partition_counts = EXCLUDED.partition_counts, file_counts = EXCLUDED.file_counts, file_total_size = EXCLUDED.file_total_size, file_base_count = EXCLUDED.file_base_count, file_base_size=EXCLUDED.file_base_size";
-//        SinkFunction<TableCountsWithTableInfo> sink = JdbcSink.sink(tableLevelAssetsSql, (ps, t) -> {
-//            ps.setString(1, t.tableId);
-//            ps.setString(2, t.tableName);
-//            ps.setString(3, t.domain);
-//            ps.setString(4, t.creator);
-//            ps.setString(5, t.namespace);
-//            ps.setInt(6, t.partionCount);
-//            ps.setInt(7, t.fileCount);
-//            ps.setLong(8, t.fileSize);
-//            ps.setInt(9, t.fileBaseCount);
-//            ps.setLong(10, t.fileBaseSize);
-//        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
-//        tableCountsStreaming.addSink(sink).name("tableAssetsSink");
-//        String dataBaseLevelAssetsSql = "INSERT INTO namespace_level_assets (namespace, table_counts, partition_counts, file_counts, file_total_size, file_base_counts, file_base_size) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (namespace) DO UPDATE SET table_counts = EXCLUDED.table_counts,partition_counts = EXCLUDED.partition_counts, file_counts = EXCLUDED.file_counts, file_total_size = EXCLUDED.file_total_size, file_base_counts = EXCLUDED.file_base_counts, file_base_size = EXCLUDED.file_base_size";
-//        SinkFunction<NameSpaceCount> namespaceAssetsSink = JdbcSink.sink(dataBaseLevelAssetsSql, (ps, t) -> {
-//            ps.setString(1, t.nameSpace);
-//            ps.setInt(2, t.tableCounts);
-//            ps.setInt(3, t.partitionCounts);
-//            ps.setInt(4, t.fileCounts);
-//            ps.setLong(5, t.fileTotalSize);
-//            ps.setInt(6, t.fileBaseCount);
-//            ps.setLong(7, t.fileBaseSize);
-//        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
-//        tableCountsStreaming.keyBy((value) -> {
-//            return value.namespace;
-//        }).process(new NamespaceLevelAssets()).addSink(namespaceAssetsSink).name("namespaceAssetsSink");
-//        String domainLevelAssetsSql = "INSERT INTO domain_level_assets (domain, table_counts, partition_counts, file_counts, file_total_size, file_base_counts, file_base_size) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (domain) DO UPDATE SET table_counts = EXCLUDED.table_counts,partition_counts = EXCLUDED.partition_counts, file_counts = EXCLUDED.file_counts, file_total_size = EXCLUDED.file_total_size, file_base_counts = EXCLUDED.file_base_counts , file_base_size = EXCLUDED.file_base_size";
-//        SinkFunction<DomainCount> domainAssetsSink = JdbcSink.sink(domainLevelAssetsSql, (ps, t) -> {
-//            ps.setString(1, t.domain);
-//            ps.setInt(2, t.tableCounts);
-//            ps.setInt(3, t.partitionCounts);
-//            ps.setInt(4, t.fileCounts);
-//            ps.setLong(5, t.fileTotalSize);
-//            ps.setInt(6, t.fileBaseCount);
-//            ps.setLong(7, t.fileBaseSize);
-//        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
-//        tableCountsStreaming.keyBy((value) -> {
-//            return value.domain;
-//        }).process(new DomainLevelAssets()).addSink(domainAssetsSink).name("domainAssetsSink");
-//        String userLevelAssetsSql = "INSERT INTO user_level_assets (creator, table_counts, partition_counts, file_counts, file_total_size, file_base_counts, file_base_size) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (creator) DO UPDATE SET table_counts = EXCLUDED.table_counts,partition_counts = EXCLUDED.partition_counts, file_counts = EXCLUDED.file_counts, file_total_size = EXCLUDED.file_total_size, file_base_counts = EXCLUDED.file_base_counts , file_base_size = EXCLUDED.file_base_size";
-//        SinkFunction<UserCounts> userLevelAssetsSink = JdbcSink.sink(userLevelAssetsSql, (ps, t) -> {
-//            ps.setString(1, t.creator);
-//            ps.setInt(2, t.tableCounts);
-//            ps.setInt(3, t.partitionCounts);
-//            ps.setInt(4, t.fileCounts);
-//            ps.setLong(5, t.fileTotalSize);
-//            ps.setInt(6, t.fileBaseCount);
-//            ps.setLong(7, t.fileBaseSize);
-//        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
-//        tableCountsStreaming.keyBy((value) -> {
-//            return value.creator;
-//        }).process(new UserLevelAssets()).addSink(userLevelAssetsSink).name("userAssetsSink");
+        JdbcConnectionOptions build = (new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()).withUrl(pgUrl).withDriverName("org.postgresql.Driver").withUsername(userName).withPassword(passWord).build();
+        String tableLevelAssetsSql = "INSERT INTO table_level_assets (" +
+                "table_id, " +
+                "table_name, " +
+                "domain, " +
+                "creator, " +
+                "namespace, " +
+                "partition_counts, " +
+                "file_counts, " +
+                "file_total_size, " +
+                "file_base_count, " +
+                "file_base_size) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT (table_id) " +
+                "DO UPDATE SET " +
+                "partition_counts = EXCLUDED.partition_counts, " +
+                "file_counts = EXCLUDED.file_counts, " +
+                "file_total_size = EXCLUDED.file_total_size, " +
+                "file_base_count = EXCLUDED.file_base_count, " +
+                "file_base_size=EXCLUDED.file_base_size";
+        SinkFunction<TableCountsWithTableInfo> sink = JdbcSink.sink(tableLevelAssetsSql, (ps, t) -> {
+            ps.setString(1, t.tableId);
+            ps.setString(2, t.tableName);
+            ps.setString(3, t.domain);
+            ps.setString(4, t.creator);
+            ps.setString(5, t.namespace);
+            ps.setInt(6, t.partionCount);
+            ps.setInt(7, t.fileCount);
+            ps.setLong(8, t.fileSize);
+            ps.setInt(9, t.fileBaseCount);
+            ps.setLong(10, t.fileBaseSize);
+        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
+        tableCountsStreaming.addSink(sink).name("tableAssetsSink");
+        String dataBaseLevelAssetsSql = "INSERT INTO namespace_level_assets (namespace, " +
+                "table_counts, " +
+                "partition_counts, " +
+                "file_counts, " +
+                "file_total_size, " +
+                "file_base_counts, " +
+                "file_base_size) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT (namespace) DO UPDATE SET " +
+                "table_counts = EXCLUDED.table_counts," +
+                "partition_counts = EXCLUDED.partition_counts, " +
+                "file_counts = EXCLUDED.file_counts, " +
+                "file_total_size = EXCLUDED.file_total_size, " +
+                "file_base_counts = EXCLUDED.file_base_counts, " +
+                "file_base_size = EXCLUDED.file_base_size";
+        SinkFunction<NameSpaceCount> namespaceAssetsSink = JdbcSink.sink(dataBaseLevelAssetsSql, (ps, t) -> {
+            ps.setString(1, t.nameSpace);
+            ps.setInt(2, t.tableCounts);
+            ps.setInt(3, t.partitionCounts);
+            ps.setInt(4, t.fileCounts);
+            ps.setLong(5, t.fileTotalSize);
+            ps.setInt(6, t.fileBaseCount);
+            ps.setLong(7, t.fileBaseSize);
+        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
+        tableCountsStreaming.keyBy((value) -> {
+            return value.namespace;
+        }).process(new NamespaceLevelAssets()).addSink(namespaceAssetsSink).name("namespaceAssetsSink");
+        String domainLevelAssetsSql = "INSERT INTO domain_level_assets (domain, " +
+                "table_counts, " +
+                "partition_counts, " +
+                "file_counts, " +
+                "file_total_size, " +
+                "file_base_counts, " +
+                "file_base_size) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT (domain) DO UPDATE SET " +
+                "table_counts = EXCLUDED.table_counts," +
+                "partition_counts = EXCLUDED.partition_counts, " +
+                "file_counts = EXCLUDED.file_counts, " +
+                "file_total_size = EXCLUDED.file_total_size, " +
+                "file_base_counts = EXCLUDED.file_base_counts , " +
+                "file_base_size = EXCLUDED.file_base_size";
+        SinkFunction<DomainCount> domainAssetsSink = JdbcSink.sink(domainLevelAssetsSql, (ps, t) -> {
+            ps.setString(1, t.domain);
+            ps.setInt(2, t.tableCounts);
+            ps.setInt(3, t.partitionCounts);
+            ps.setInt(4, t.fileCounts);
+            ps.setLong(5, t.fileTotalSize);
+            ps.setInt(6, t.fileBaseCount);
+            ps.setLong(7, t.fileBaseSize);
+        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
+        tableCountsStreaming.keyBy((value) -> {
+            return value.domain;
+        }).process(new DomainLevelAssets()).addSink(domainAssetsSink).name("domainAssetsSink");
+        String userLevelAssetsSql = "INSERT INTO user_level_assets (creator, table_counts, partition_counts, file_counts, file_total_size, file_base_counts, file_base_size) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (creator) DO UPDATE SET table_counts = EXCLUDED.table_counts,partition_counts = EXCLUDED.partition_counts, file_counts = EXCLUDED.file_counts, file_total_size = EXCLUDED.file_total_size, file_base_counts = EXCLUDED.file_base_counts , file_base_size = EXCLUDED.file_base_size";
+        SinkFunction<UserCounts> userLevelAssetsSink = JdbcSink.sink(userLevelAssetsSql, (ps, t) -> {
+            ps.setString(1, t.creator);
+            ps.setInt(2, t.tableCounts);
+            ps.setInt(3, t.partitionCounts);
+            ps.setInt(4, t.fileCounts);
+            ps.setLong(5, t.fileTotalSize);
+            ps.setInt(6, t.fileBaseCount);
+            ps.setLong(7, t.fileBaseSize);
+        }, JdbcExecutionOptions.builder().withBatchIntervalMs(200L).withBatchSize(jdbcBatchSize).withMaxRetries(3).build(), build);
+        tableCountsStreaming.keyBy((value) -> {
+            return value.creator;
+        }).process(new UserLevelAssets()).addSink(userLevelAssetsSink).name("userAssetsSink");
         env.execute();
     }
 }

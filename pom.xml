@@ -127,11 +127,12 @@
             <version>${flink.version}</version>
             <scope>test</scope>
         </dependency>
-        <!--        <dependency>-->
-        <!--            <groupId>org.postgresql</groupId>-->
-        <!--            <artifactId>postgresql</artifactId>-->
-        <!--            <version>42.7.4</version>-->
-        <!--        </dependency>-->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.4</version>
+            <scope>compile</scope>
+        </dependency>
         <!-- https://mvnrepository.com/artifact/org.apache.flink/flink-sql-connector-postgres-cdc -->
         <dependency>
             <groupId>com.ververica</groupId>
@@ -194,12 +195,6 @@
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-client</artifactId>
             <version>3.3.2</version>
-        </dependency>
-        <!-- https://mvnrepository.com/artifact/io.openlineage/openlineage-flink -->
-        <dependency>
-            <groupId>io.openlineage</groupId>
-            <artifactId>openlineage-flink</artifactId>
-            <version>1.31.0</version>
         </dependency>
 
     </dependencies>
@@ -293,6 +288,7 @@
                             <include>com.alibaba:fastjson</include>
                             <include>org.apache.flink:flink-connector-jdbc</include>
                             <include>com.ververica:flink-sql-connector-postgres-cdc</include>
+                            <include>org.postgresql:postgresql</include>
                         </includes>
                         <!--                        <excludes>-->
                         <!--                            <exclude>org.apache.logging.log4j:*</exclude>-->

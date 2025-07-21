@@ -8,9 +8,10 @@ import java.sql.SQLException;
 
 public class PGConnectionPool {
 
+
     private static HikariDataSource dataSource;
 
-    public static void init(String jdbcUrl, String user, String password) {
+    public static void init(String jdbcUrl, String user, String password) throws ClassNotFoundException {
         if (dataSource == null) {
             HikariConfig config = new HikariConfig();
             config.setJdbcUrl(jdbcUrl);
@@ -21,7 +22,7 @@ public class PGConnectionPool {
             config.setMinimumIdle(1);
             config.setIdleTimeout(60000);        // 空闲连接超时时间
             config.setConnectionTimeout(10000);  // 获取连接超时时间
-
+            Class.forName("org.postgresql.Driver"); // 确保驱动类加载
             dataSource = new HikariDataSource(config);
             System.out.println("✅ HikariCP PostgreSQL pool initialized.");
         }

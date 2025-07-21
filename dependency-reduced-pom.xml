@@ -155,11 +155,5 @@
       <version>3.3.2</version>
       <scope>compile</scope>
     </dependency>
-    <dependency>
-      <groupId>io.openlineage</groupId>
-      <artifactId>openlineage-flink</artifactId>
-      <version>1.31.0</version>
-      <scope>compile</scope>
-    </dependency>
   </dependencies>
 </project>

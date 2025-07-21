@@ -113,7 +113,7 @@ public class CleanUtils {
         }
     }
 
-    private void deleteLocalFile(String filePath) throws SQLException {
+    private void deleteLocalFile(String filePath) {
         File file = new File(filePath);
         if (file.exists()) {
             if (file.delete()) {
@@ -126,6 +126,7 @@ public class CleanUtils {
             logger.info("=============================本地文件不存在: " + filePath);
         }
     }
+
 
     public boolean getCompactVersion(String tableId, String partitionDesc, int version, Connection connection) throws SQLException {
         String snapshotSql = "SELECT snapshot FROM partition_info " +
@@ -159,7 +160,8 @@ public class CleanUtils {
                 if (rs.next()){
                     Object op = rs.getObject("op");
                     String path = op.toString();
-                    return path.contains("compact_") && path.contains("compact_dir");
+                    logger.info("当前压缩的文件目录：" + path);
+                    return path.contains("compact_");
                 }
             }
         }
@@ -167,9 +169,9 @@ public class CleanUtils {
     }
 
 
-    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc, Connection connection, Boolean newCompaction) throws SQLException {
+    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc, Connection connection, Boolean oldCompaction) {
         snapshot.forEach(commitId -> {
-            if (!newCompaction) {
+            if (oldCompaction) {
                 logger.info("清理旧版压缩数据");
                 String sql = "SELECT \n" +
                         "    dci.table_id, \n" +
