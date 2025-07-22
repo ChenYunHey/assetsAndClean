@@ -46,15 +46,28 @@ public class CleanUtils {
         }
     }
 
+    public boolean partitionExist(String tableId, String partitionDesc, Connection connection) {
+        String sql = "SELECT 1 FROM partition_info WHERE table_id = ? AND partition_desc = ? LIMIT 1";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, tableId);
+            ps.setString(2, partitionDesc);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+
     public void deletePartitionInfo(String table_id, String partition_desc, String commit_id) throws SQLException {
         Connection connection = DriverManager.getConnection("jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
         String sql = "DELETE FROM partition_info where table_id= '" + table_id +
                 "' and partition_desc ='" + partition_desc + "' and '" + commit_id + "' = ANY(snapshot)";
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            // 执行删除操作
             int rowsDeleted = preparedStatement.executeUpdate();
         } catch (SQLException e) {
-            // 处理SQL异常
             e.printStackTrace();
             logger.info("删除partition_info数据异常");
         }
@@ -64,7 +77,6 @@ public class CleanUtils {
         String sql = "DELETE FROM partition_info where table_id= '" + table_id +
                 "' and partition_desc ='" + partition_desc + "' and version = '" + version + "'";
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            // 执行删除操作
             preparedStatement.executeUpdate();
             logger.info(sql);
         } catch (SQLException e) {

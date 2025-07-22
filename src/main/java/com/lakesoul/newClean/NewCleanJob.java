@@ -62,10 +62,10 @@ public class NewCleanJob {
         schemaList = parameter.get(SourceOptions.SCHEMA_LIST.key());
         pgUrl = parameter.get(SourceOptions.PG_URL.key());
         sourceParallelism = parameter.getInt(SourceOptions.SOURCE_PARALLELISM.key(), SourceOptions.SOURCE_PARALLELISM.defaultValue());
-        //ontimerInterval = 60000;
-        ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
-        //expiredTime = 60000;
-        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
+        ontimerInterval = 60000;
+        //ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
+        expiredTime = 60000;
+        //expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
 
 
         JdbcIncrementalSource<String> postgresIncrementalSource =
@@ -226,7 +226,7 @@ public class NewCleanJob {
                         willState.put(tableId + "/" + partitionDesc + "/" + version, willStateValue);
                     }
                 } else if (snapshot.size() > 1) {
-                    System.out.println("识别出当前compaction为并发提交，忽略");
+                    log.info("识别出当前compaction为并发提交，忽略");
                     if (compactNewState.contains(tableId + "/" + partitionDesc)) {
                         long compactTime = compactNewState.get(tableId + "/" + partitionDesc);
                         if (timestamp < compactTime - expiredTime) {
@@ -255,18 +255,26 @@ public class NewCleanJob {
                     String[] keys = willStateEntry.getKey().split("/");
                     String tableId = keys[0];
                     String partitionDesc = keys[1];
-                    int version = Integer.parseInt(keys[2]);
-                    List<String> snapshot = willStateEntry.getValue().snapshot;
-                    String compositeKey = tableId + "/" + partitionDesc;
-                    if (compositeKey.equals(compactId)) {
-                        PartitionInfo.WillStateValue stateValue = willStateEntry.getValue();
-                        if (stateValue.timestamp < expiredThreshold) {
-                            cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection, compactionVersionState.value());
-                            cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
-                            willStateIterator.remove();
+                    if (cleanUtils.partitionExist(tableId, partitionDesc, pgConnection)){
+                        int version = Integer.parseInt(keys[2]);
+                        List<String> snapshot = willStateEntry.getValue().snapshot;
+                        String compositeKey = tableId + "/" + partitionDesc;
+                        if (compositeKey.equals(compactId)) {
+                            PartitionInfo.WillStateValue stateValue = willStateEntry.getValue();
+                            if (stateValue.timestamp < expiredThreshold) {
+                                cleanUtils.deleteFileAndDataCommitInfo(snapshot, tableId, partitionDesc, pgConnection, compactionVersionState.value());
+                                cleanUtils.cleanPartitionInfo(tableId, partitionDesc, version, pgConnection);
+                                willStateIterator.remove();
+                            }
                         }
+                    } else {
+                        log.info("检测到table_id :" + tableId + " 对应的分区： " + partitionDesc + "已经被删除，清理该分区的所有状态");
+                        compactNewState.clear();
+                        willState.clear();
+                        break;
                     }
                 }
+
             }
             long currentProcessingTime = ctx.timerService().currentProcessingTime();
             ctx.timerService().registerProcessingTimeTimer(currentProcessingTime + ontimerInterval);
