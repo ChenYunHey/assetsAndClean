@@ -62,10 +62,10 @@ public class NewCleanJob {
         schemaList = parameter.get(SourceOptions.SCHEMA_LIST.key());
         pgUrl = parameter.get(SourceOptions.PG_URL.key());
         sourceParallelism = parameter.getInt(SourceOptions.SOURCE_PARALLELISM.key(), SourceOptions.SOURCE_PARALLELISM.defaultValue());
-        ontimerInterval = 60000;
-        //ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
-        expiredTime = 60000;
-        //expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
+        //ontimerInterval = 60000;
+        ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 2) * 3600000;
+        //expiredTime = 60000;
+        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 2) * 86400000;
 
 
         JdbcIncrementalSource<String> postgresIncrementalSource =
